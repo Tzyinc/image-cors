@@ -49,7 +49,7 @@ The most recently used 100 transformed outputs (scales, rotations, and `gbdither
 
 The `gbc` filter maps every pixel to a fixed 16-colour RGB555 palette, giving a colourful Game Boy Color look. The palette is defined as `GBC_PALETTE` in `src/image-store.js`, ready to be replaced or made selectable in a future version.
 
-`gb` uses a high-contrast four-level greyscale palette (`24`, `104`, `188`, `255`) designed to avoid crushed blacks and indistinct highlights. `gbdither` uses Floyd–Steinberg dithering with a strict black-and-white palette, preserving more visual detail in gradients at the cost of a deliberate pixel pattern. It is applied after rotation and scaling, so the dither pattern remains crisp at the final requested size.
+`gb` uses a high-contrast four-level greyscale palette (`24`, `104`, `188`, `255`) designed to avoid crushed blacks and indistinct highlights. `gbdither` normalises tonal range and applies restrained local contrast before Floyd–Steinberg dithering into a strict black-and-white palette. It is applied after rotation and scaling, so the dither pattern remains crisp at the final requested size.
 
 `gb` is served as a lossless indexed PNG with at most four palette entries (equivalent to 2-bit colour). `gbdither` is served as a lossless, indexed 1-bit PNG with exactly two palette entries. Both remain lossless after rotation, scaling, or palette flipping.
 

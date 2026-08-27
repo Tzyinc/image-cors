@@ -155,7 +155,14 @@ export async function applyFilter(image, filter) {
 }
 
 async function ditherGameBoyGreyscale(image) {
-  const { data, info } = await sharp(image).grayscale().raw().toBuffer({ resolveWithObject: true });
+  // Stretch the final image's tonal range and apply restrained local contrast first.
+  // A single global threshold otherwise loses most detail in low-contrast radar imagery.
+  const { data, info } = await sharp(image)
+    .grayscale()
+    .normalise({ lower: 1, upper: 99 })
+    .clahe({ width: 16, height: 16, maxSlope: 2 })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
   const pixels = new Float32Array(info.width * info.height);
   for (let pixel = 0; pixel < pixels.length; pixel += 1) pixels[pixel] = data[pixel * info.channels];
 
