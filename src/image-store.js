@@ -4,6 +4,9 @@ const DEFAULT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const VALID_FILTERS = new Set(['bnw', 'gb', 'gbc', 'gbdither']);
 const EAGER_FILTERS = new Set(['bnw', 'gb', 'gbc']);
 const VALID_PALETTES = new Set(['flip']);
+// Avoid pure black for the darkest shade and pure-white-adjacent tones for the
+// middle lights. This holds up better on displays that crush shadows or highlights.
+const GB_GREYSCALE_LEVELS = [24, 104, 188, 255];
 
 // A compact, Game Boy Color-inspired palette. Each channel is an RGB555 value
 // expanded to 8-bit, matching the colour depth of the original CGB hardware.
@@ -132,7 +135,7 @@ export async function applyFilter(image, filter) {
   const pipeline = sharp(image);
   if (filter === 'bnw') return pipeline.grayscale().threshold(128).jpeg().toBuffer();
 
-  // Four evenly spaced grey levels: 0, 85, 170, 255.
+  // Four display-friendly grey levels with clearer shadow and highlight separation.
   if (filter === 'gb') {
     return pipeline
       .grayscale()
@@ -140,7 +143,7 @@ export async function applyFilter(image, filter) {
       .toBuffer({ resolveWithObject: true })
       .then(({ data, info }) => {
         for (let index = 0; index < data.length; index += info.channels) {
-          data[index] = Math.min(255, Math.round(data[index] / 85) * 85);
+          data[index] = closestGreyscaleLevel(data[index]);
         }
         return sharp(data, { raw: info }).jpeg().toBuffer();
       });
@@ -155,13 +158,13 @@ async function ditherGameBoyGreyscale(image) {
   const pixels = new Float32Array(info.width * info.height);
   for (let pixel = 0; pixel < pixels.length; pixel += 1) pixels[pixel] = data[pixel * info.channels];
 
-  // Floyd–Steinberg error diffusion into the four standard Game Boy grey levels.
+  // Floyd–Steinberg error diffusion into the high-contrast Game Boy grey levels.
   const output = Buffer.alloc(pixels.length);
   for (let y = 0; y < info.height; y += 1) {
     for (let x = 0; x < info.width; x += 1) {
       const index = y * info.width + x;
       const source = Math.max(0, Math.min(255, pixels[index]));
-      const quantized = Math.max(0, Math.min(255, Math.round(source / 85) * 85));
+      const quantized = closestGreyscaleLevel(source);
       const error = source - quantized;
       output[index] = quantized;
 
@@ -175,6 +178,13 @@ async function ditherGameBoyGreyscale(image) {
   }
 
   return sharp(output, { raw: { width: info.width, height: info.height, channels: 1 } }).jpeg().toBuffer();
+}
+
+function closestGreyscaleLevel(value) {
+  return GB_GREYSCALE_LEVELS.reduce(
+    (closest, level) => Math.abs(value - level) < Math.abs(value - closest) ? level : closest,
+    GB_GREYSCALE_LEVELS[0],
+  );
 }
 
 async function mapToPalette(image, palette) {
@@ -205,4 +215,4 @@ function nearestColour(red, green, blue, palette) {
   return closest;
 }
 
-export { DEFAULT_REFRESH_INTERVAL_MS, GBC_PALETTE, VALID_FILTERS, VALID_PALETTES };
+export { DEFAULT_REFRESH_INTERVAL_MS, GBC_PALETTE, GB_GREYSCALE_LEVELS, VALID_FILTERS, VALID_PALETTES };
