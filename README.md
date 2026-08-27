@@ -35,9 +35,13 @@ An [.env.example](/Users/tenzy/Documents/fun/image-cache-proxy/.env.example) lis
 | `/?filter=gbc` | Game Boy Color–inspired 16-colour palette version (cached) |
 | `/?palette=flip` | Inverted-colour palette version (cached) |
 | `/?filter=gbc&palette=flip` | Inverted Game Boy Color palette version (cached) |
+| `/?rotate=90` | Rotate clockwise by 90° |
+| `/?rotate=270&w=320` | Rotate clockwise by 270°, then scale |
 | `/?w=400&filter=gb` | Cached filter then on-demand scaling |
 
 Both `w` and `h` must be integers from 1 through 8192. With exactly one dimension supplied, the image is kept within that dimension without enlargement. All filtered source variants are regenerated along with the upstream image every five minutes and retained in memory; scaled output is deliberately generated per request.
+
+`rotate` accepts only `0`, `90`, `180`, or `270` (clockwise degrees). It is applied before sizing and is deliberately generated per request, like scaling.
 
 The `gbc` filter maps every pixel to a fixed 16-colour RGB555 palette, giving a colourful Game Boy Color look. The palette is defined as `GBC_PALETTE` in `src/image-store.js`, ready to be replaced or made selectable in a future version.
 

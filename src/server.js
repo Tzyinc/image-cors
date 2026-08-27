@@ -19,23 +19,28 @@ app.get('/', async (request, response, next) => {
 
     // Scaling is intentionally not cached: Sharp transforms the small in-memory source cheaply,
     // while avoiding an unbounded cache for arbitrary width/height combinations.
-    const image = options.width || options.height
-      ? await sharp(source)
-          .resize({
-            width: options.width,
-            height: options.height,
-            fit: options.width && options.height ? 'fill' : 'inside',
-            withoutEnlargement: true,
-          })
-          .jpeg()
-          .toBuffer()
-      : source;
+    const needsTransform = options.width || options.height || options.rotation !== 0;
+    let image = source;
+    if (needsTransform) {
+      const pipeline = sharp(source);
+      if (options.rotation !== 0) pipeline.rotate(options.rotation);
+      if (options.width || options.height) {
+        pipeline.resize({
+          width: options.width,
+          height: options.height,
+          fit: options.width && options.height ? 'fill' : 'inside',
+          withoutEnlargement: true,
+        });
+      }
+      image = await pipeline.jpeg().toBuffer();
+    }
 
     response.set({
       'content-type': 'image/jpeg',
       'cache-control': 'public, max-age=60',
       'x-image-filter': options.filter ?? 'none',
       'x-image-palette': options.palette ?? 'normal',
+      'x-image-rotation': String(options.rotation),
     });
     response.send(image);
   } catch (error) {
@@ -61,13 +66,22 @@ function parseImageOptions(query) {
   const height = parseDimension(query.h, 'h');
   const filter = query.filter;
   const palette = query.palette;
+  const rotation = parseRotation(query.rotate);
   if (filter !== undefined && (typeof filter !== 'string' || !VALID_FILTERS.has(filter))) {
     throw new InputError(`filter must be one of: ${[...VALID_FILTERS].join(', ')}`);
   }
   if (palette !== undefined && (typeof palette !== 'string' || !VALID_PALETTES.has(palette))) {
     throw new InputError(`palette must be one of: ${[...VALID_PALETTES].join(', ')}`);
   }
-  return { width, height, filter, palette };
+  return { width, height, filter, palette, rotation };
+}
+
+function parseRotation(value) {
+  if (value === undefined) return 0;
+  if (typeof value !== 'string' || !/^(0|90|180|270)$/.test(value)) {
+    throw new InputError('rotate must be one of: 0, 90, 180, 270');
+  }
+  return Number(value);
 }
 
 function parseDimension(value, name) {
