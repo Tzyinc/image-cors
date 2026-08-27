@@ -7,10 +7,6 @@ const VALID_PALETTES = new Set(['flip']);
 // Avoid pure black for the darkest shade and pure-white-adjacent tones for the
 // middle lights. This holds up better on displays that crush shadows or highlights.
 const GB_GREYSCALE_LEVELS = [40, 128, 200, 255];
-// Each four-level GB tone maps directly to a stable black/white tile density.
-// This avoids error-diffusion patterns disappearing at small output dimensions.
-const GB_HALFTONE_WHITE_COUNTS = [0, 2, 3, 4];
-const GB_HALFTONE_RANK_2X2 = [0, 2, 3, 1];
 
 // A compact, Game Boy Color-inspired palette. Each channel is an RGB555 value
 // expanded to 8-bit, matching the colour depth of the original CGB hardware.
@@ -158,22 +154,34 @@ export async function applyFilter(image, filter) {
 }
 
 async function ditherGameBoyGreyscale(image) {
-  // Dither the same four tonal bands used by `gb`, rather than the raw image.
-  // This makes the 1-bit variant inherit the successful GB tonal treatment.
-  const gbImage = await applyFilter(image, 'gb');
-  const { data, info } = await sharp(gbImage).grayscale().raw().toBuffer({ resolveWithObject: true });
-  const output = Buffer.alloc(info.width * info.height);
+  // Apply error diffusion at the requested output size.  Unlike a two-colour
+  // halftone, this keeps all four GB greys visible in the darkest regions.
+  const { data, info } = await sharp(image).grayscale().raw().toBuffer({ resolveWithObject: true });
+  const values = new Float32Array(info.width * info.height);
+  for (let index = 0; index < values.length; index += 1) {
+    values[index] = liftShadowDetail(data[index * info.channels]);
+  }
+
+  const output = Buffer.alloc(values.length);
   for (let y = 0; y < info.height; y += 1) {
     for (let x = 0; x < info.width; x += 1) {
       const index = y * info.width + x;
-      const toneIndex = gbToneIndex(data[index * info.channels]);
-      const rank = GB_HALFTONE_RANK_2X2[(y % 2) * 2 + (x % 2)];
-      output[index] = rank < GB_HALFTONE_WHITE_COUNTS[toneIndex] ? 255 : 0;
+      const original = values[index];
+      const quantised = nearestGbLevel(original);
+      const error = original - quantised;
+      output[index] = quantised;
+
+      // Floyd-Steinberg diffusion. Work strictly left-to-right so the result is
+      // deterministic and do it after scaling, where every output pixel matters.
+      diffuseError(values, info.width, info.height, x + 1, y, error * (7 / 16));
+      diffuseError(values, info.width, info.height, x - 1, y + 1, error * (3 / 16));
+      diffuseError(values, info.width, info.height, x, y + 1, error * (5 / 16));
+      diffuseError(values, info.width, info.height, x + 1, y + 1, error * (1 / 16));
     }
   }
 
   return sharp(output, { raw: { width: info.width, height: info.height, channels: 1 } })
-    .png({ palette: true, colours: 2 })
+    .png({ palette: true, colours: 4 })
     .toBuffer();
 }
 
@@ -183,17 +191,23 @@ function quantiseGbLevel(value) {
   return GB_GREYSCALE_LEVELS[index];
 }
 
-function gbToneIndex(value) {
-  let closestIndex = 0;
+function nearestGbLevel(value) {
+  let closestLevel = GB_GREYSCALE_LEVELS[0];
   let closestDistance = Infinity;
-  for (const [index, level] of GB_GREYSCALE_LEVELS.entries()) {
+  for (const level of GB_GREYSCALE_LEVELS) {
     const distance = Math.abs(value - level);
     if (distance < closestDistance) {
-      closestIndex = index;
+      closestLevel = level;
       closestDistance = distance;
     }
   }
-  return closestIndex;
+  return closestLevel;
+}
+
+function diffuseError(values, width, height, x, y, amount) {
+  if (x < 0 || x >= width || y < 0 || y >= height) return;
+  const index = y * width + x;
+  values[index] = Math.max(0, Math.min(255, values[index] + amount));
 }
 
 function liftShadowDetail(value) {
@@ -215,12 +229,13 @@ async function mapToPalette(image, palette) {
 
 function flipPalette(image, colours) {
   const pipeline = sharp(image).negate();
+  if (colours === 2) return pipeline.png().toBuffer();
   return colours ? pipeline.png({ palette: true, colours }).toBuffer() : pipeline.jpeg().toBuffer();
 }
 
 function paletteColourCount(filter) {
   if (filter === 'gb') return 4;
-  if (filter === 'gbdither') return 2;
+  if (filter === 'gbdither') return 4;
   return undefined;
 }
 
@@ -240,8 +255,6 @@ function nearestColour(red, green, blue, palette) {
 export {
   DEFAULT_REFRESH_INTERVAL_MS,
   GBC_PALETTE,
-  GB_HALFTONE_RANK_2X2,
-  GB_HALFTONE_WHITE_COUNTS,
   GB_GREYSCALE_LEVELS,
   VALID_FILTERS,
   VALID_PALETTES,

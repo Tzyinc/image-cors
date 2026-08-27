@@ -36,6 +36,7 @@ class LruCache {
 
 const PORT = parsePort(process.env.PORT) ?? 3000;
 const TRANSFORM_CACHE_CAPACITY = 100;
+const BUILD_ID = 'dither-grayscale-v2';
 const refreshIntervalMs = parsePositiveInteger(process.env.REFRESH_INTERVAL_MS) ?? DEFAULT_REFRESH_INTERVAL_MS;
 const transformedImageCache = new LruCache(TRANSFORM_CACHE_CAPACITY);
 const store = new ImageStore({
@@ -46,6 +47,7 @@ const store = new ImageStore({
 const app = express();
 
 app.get('/health', (_request, response) => response.json({
+  build: BUILD_ID,
   ...store.status,
   transformedCacheEntries: transformedImageCache.size,
   transformedCacheCapacity: TRANSFORM_CACHE_CAPACITY,
@@ -101,11 +103,15 @@ async function createOutputImage(options) {
       // A restrained final pass restores edge definition lost during reduction.
       pipeline.sharpen({ sigma: 0.5, m1: 0, m2: 1.5 });
     }
-    image = await encodeOutput(pipeline, options.filter);
+    // `gbdither` must receive the full-colour resized image. Encoding it before
+    // dithering would discard tonal detail before error diffusion can use it.
+    image = deferredDither
+      ? await pipeline.png().toBuffer()
+      : await encodeOutput(pipeline, options.filter);
   }
   if (deferredDither) {
     image = await applyFilter(image, 'gbdither');
-    if (options.palette === 'flip') image = await sharp(image).negate().png({ palette: true, colours: 2 }).toBuffer();
+    if (options.palette === 'flip') image = await sharp(image).negate().png().toBuffer();
   }
   return image;
 }
@@ -123,7 +129,7 @@ function outputContentType(options) {
 
 function paletteColourCount(filter) {
   if (filter === 'gb') return 4;
-  if (filter === 'gbdither') return 2;
+  if (filter === 'gbdither') return 4;
   return undefined;
 }
 

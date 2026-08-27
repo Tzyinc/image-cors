@@ -33,7 +33,7 @@ An [.env.example](/Users/tenzy/Documents/fun/image-cache-proxy/.env.example) lis
 | `/?w=400&h=300` | Stretched to exactly 400 × 300px |
 | `/?filter=bnw` | Black-and-white version (cached) |
 | `/?filter=gb` | Four-level greyscale version (cached) |
-| `/?filter=gbdither` | 1-bit black-and-white Game Boy dither (cached) |
+| `/?filter=gbdither` | Four-tone Game Boy error-diffusion dither (cached) |
 | `/?filter=gbc` | Game Boy Color–inspired 16-colour palette version (cached) |
 | `/?palette=flip` | Inverted-colour palette version (cached) |
 | `/?filter=gbc&palette=flip` | Inverted Game Boy Color palette version (cached) |
@@ -54,9 +54,9 @@ Use `nocache=1` to bypass the server-side transform cache for a request. Respons
 
 The `gbc` filter maps every pixel to a fixed 16-colour RGB555 palette, giving a colourful Game Boy Color look. The palette is defined as `GBC_PALETTE` in `src/image-store.js`, ready to be replaced or made selectable in a future version.
 
-`gb` uses a shadow-lifted four-level greyscale palette (`40`, `128`, `200`, `255`) with fixed tonal bands, so midtones do not collapse into black. `gbdither` first applies those exact `gb` bands, then maps them to a deterministic 2×2 halftone: solid black, 50% checkerboard, 75% white, and solid white. This custom mapping preserves visibly distinct tones at small output dimensions.
+`gb` uses a shadow-lifted four-level greyscale palette (`40`, `128`, `200`, `255`) with fixed tonal bands, so midtones do not collapse into black. `gbdither` applies Floyd-Steinberg error diffusion to those same four levels after scaling, so it adds texture without turning the dark-grey band into dense black dots.
 
-`gb` is served as a lossless indexed PNG with at most four palette entries (equivalent to 2-bit colour). `gbdither` is served as a lossless, indexed 1-bit PNG with exactly two palette entries. Both remain lossless after rotation, scaling, or palette flipping.
+`gb` and `gbdither` are served as lossless indexed PNGs with at most four palette entries (equivalent to 2-bit colour). Both remain lossless after rotation, scaling, or palette flipping.
 
 `palette=flip` inverts the colour palette after the selected filter has been applied. Original, filtered, and flipped variants are all regenerated and cached on each five-minute refresh.
 
