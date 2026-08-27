@@ -39,13 +39,17 @@ An [.env.example](/Users/tenzy/Documents/fun/image-cache-proxy/.env.example) lis
 | `/?rotate=270&w=320` | Rotate clockwise by 270°, then scale |
 | `/?w=400&filter=gb` | Cached filter then on-demand scaling |
 
-Both `w` and `h` must be integers from 1 through 8192. With exactly one dimension supplied, the image is kept within that dimension without enlargement. All filtered source variants are regenerated along with the upstream image every five minutes and retained in memory; scaled output is deliberately generated per request.
+Both `w` and `h` must be integers from 1 through 8192. With exactly one dimension supplied, the image is kept within that dimension without enlargement. All filtered source variants are regenerated along with the upstream image every five minutes and retained in memory.
+
+Scaled output uses full Lanczos3 resampling with a light sharpening pass, prioritising crisp detail at small dimensions over the fastest possible resize.
+
+The most recently used 100 transformed outputs (scales, rotations, and `gbdither` variants) are cached in memory using an LRU policy. This keeps common sizes fast without retaining every possible query combination. The transformed-output cache is cleared on each upstream refresh, so it cannot serve an outdated image.
 
 `rotate` accepts only `0`, `90`, `180`, or `270` (clockwise degrees). It is applied before sizing and is deliberately generated per request, like scaling.
 
 The `gbc` filter maps every pixel to a fixed 16-colour RGB555 palette, giving a colourful Game Boy Color look. The palette is defined as `GBC_PALETTE` in `src/image-store.js`, ready to be replaced or made selectable in a future version.
 
-`gbdither` uses Floyd–Steinberg dithering with the same four grey levels as `gb`, preserving more visual detail in gradients at the cost of a deliberate pixel pattern.
+`gbdither` uses Floyd–Steinberg dithering with the same four grey levels as `gb`, preserving more visual detail in gradients at the cost of a deliberate pixel pattern. It is applied after rotation and scaling, so the dither pattern remains crisp at the final requested size.
 
 `palette=flip` inverts the colour palette after the selected filter has been applied. Original, filtered, and flipped variants are all regenerated and cached on each five-minute refresh.
 

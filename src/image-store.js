@@ -2,6 +2,7 @@ import sharp from 'sharp';
 
 const DEFAULT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const VALID_FILTERS = new Set(['bnw', 'gb', 'gbc', 'gbdither']);
+const EAGER_FILTERS = new Set(['bnw', 'gb', 'gbc']);
 const VALID_PALETTES = new Set(['flip']);
 
 // A compact, Game Boy Color-inspired palette. Each channel is an RGB555 value
@@ -21,16 +22,19 @@ export class ImageStore {
   #filtered = new Map();
   #lastUpdatedAt;
   #refreshPromise;
+  #onRefresh;
 
   constructor({
     sourceUrl,
     refreshIntervalMs = DEFAULT_REFRESH_INTERVAL_MS,
     fetchFn = globalThis.fetch,
+    onRefresh,
   } = {}) {
     if (!sourceUrl) throw new Error('IMAGE_SOURCE_URL must be configured');
     this.#sourceUrl = sourceUrl;
     this.#refreshIntervalMs = refreshIntervalMs;
     this.#fetch = fetchFn;
+    this.#onRefresh = onRefresh;
   }
 
   async getImage(filter, palette) {
@@ -46,7 +50,7 @@ export class ImageStore {
     if (!filter && !palette) return this.#original;
     const key = cacheKey(filter, palette);
     if (!this.#filtered.has(key)) {
-      const base = filter ? await createFilteredImage(this.#original, filter) : this.#original;
+      const base = filter ? await applyFilter(this.#original, filter) : this.#original;
       this.#filtered.set(key, palette === 'flip' ? await flipPalette(base) : base);
     }
     return this.#filtered.get(key);
@@ -84,6 +88,7 @@ export class ImageStore {
       this.#original = image;
       this.#filtered = new Map(filteredEntries);
       this.#lastUpdatedAt = new Date();
+      this.#onRefresh?.();
     })();
 
     try {
@@ -109,10 +114,10 @@ export class ImageStore {
 
 async function buildFilteredCache(image) {
   const unflippedEntries = await Promise.all(
-    [...VALID_FILTERS].map(async (filter) => [cacheKey(filter), await createFilteredImage(image, filter)]),
+    [...EAGER_FILTERS].map(async (filter) => [cacheKey(filter), await applyFilter(image, filter)]),
   );
   const unflipped = new Map(unflippedEntries);
-  const sourceVariants = [[undefined, image], ...[...VALID_FILTERS].map((filter) => [filter, unflipped.get(cacheKey(filter))])];
+  const sourceVariants = [[undefined, image], ...[...EAGER_FILTERS].map((filter) => [filter, unflipped.get(cacheKey(filter))])];
   const flippedEntries = await Promise.all(
     sourceVariants.map(async ([filter, source]) => [cacheKey(filter, 'flip'), await flipPalette(source)]),
   );
@@ -123,7 +128,7 @@ function cacheKey(filter, palette) {
   return `${filter ?? 'original'}:${palette ?? 'normal'}`;
 }
 
-async function createFilteredImage(image, filter) {
+export async function applyFilter(image, filter) {
   const pipeline = sharp(image);
   if (filter === 'bnw') return pipeline.grayscale().threshold(128).jpeg().toBuffer();
 
