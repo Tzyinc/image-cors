@@ -51,6 +51,8 @@ The `gbc` filter maps every pixel to a fixed 16-colour RGB555 palette, giving a 
 
 `gb` and `gbdither` use a high-contrast four-level greyscale palette (`24`, `104`, `188`, `255`) designed to avoid crushed blacks and indistinct highlights. `gbdither` uses Floyd–Steinberg dithering with those levels, preserving more visual detail in gradients at the cost of a deliberate pixel pattern. It is applied after rotation and scaling, so the dither pattern remains crisp at the final requested size.
 
+`gb` and `gbdither` are served as lossless indexed PNGs with at most four palette entries (equivalent to 2-bit colour), including after rotation, scaling, or palette flipping. A true 1-bit file would only preserve two colours.
+
 `palette=flip` inverts the colour palette after the selected filter has been applied. Original, filtered, and flipped variants are all regenerated and cached on each five-minute refresh.
 
 `GET /health` returns cache readiness, last refresh time, and generated filtered-cache keys.

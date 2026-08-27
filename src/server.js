@@ -62,7 +62,7 @@ app.get('/', async (request, response, next) => {
     }
 
     response.set({
-      'content-type': 'image/jpeg',
+      'content-type': outputContentType(options),
       'cache-control': 'public, max-age=60',
       'x-image-filter': options.filter ?? 'none',
       'x-image-palette': options.palette ?? 'normal',
@@ -98,13 +98,27 @@ async function createOutputImage(options) {
       // A restrained final pass restores edge definition lost during reduction.
       pipeline.sharpen({ sigma: 0.5, m1: 0, m2: 1.5 });
     }
-    image = await pipeline.jpeg().toBuffer();
+    image = await encodeOutput(pipeline, options.filter);
   }
   if (deferredDither) {
     image = await applyFilter(image, 'gbdither');
-    if (options.palette === 'flip') image = await sharp(image).negate().jpeg().toBuffer();
+    if (options.palette === 'flip') image = await sharp(image).negate().png({ palette: true, colours: 4 }).toBuffer();
   }
   return image;
+}
+
+function encodeOutput(pipeline, filter) {
+  return isLosslessFilter(filter)
+    ? pipeline.png({ palette: true, colours: 4 }).toBuffer()
+    : pipeline.jpeg().toBuffer();
+}
+
+function outputContentType(options) {
+  return isLosslessFilter(options.filter) ? 'image/png' : 'image/jpeg';
+}
+
+function isLosslessFilter(filter) {
+  return filter === 'gb' || filter === 'gbdither';
 }
 
 function shouldCacheOutput(options) {

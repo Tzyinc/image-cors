@@ -54,7 +54,7 @@ export class ImageStore {
     const key = cacheKey(filter, palette);
     if (!this.#filtered.has(key)) {
       const base = filter ? await applyFilter(this.#original, filter) : this.#original;
-      this.#filtered.set(key, palette === 'flip' ? await flipPalette(base) : base);
+      this.#filtered.set(key, palette === 'flip' ? await flipPalette(base, isLosslessFilter(filter)) : base);
     }
     return this.#filtered.get(key);
   }
@@ -122,7 +122,7 @@ async function buildFilteredCache(image) {
   const unflipped = new Map(unflippedEntries);
   const sourceVariants = [[undefined, image], ...[...EAGER_FILTERS].map((filter) => [filter, unflipped.get(cacheKey(filter))])];
   const flippedEntries = await Promise.all(
-    sourceVariants.map(async ([filter, source]) => [cacheKey(filter, 'flip'), await flipPalette(source)]),
+    sourceVariants.map(async ([filter, source]) => [cacheKey(filter, 'flip'), await flipPalette(source, isLosslessFilter(filter))]),
   );
   return [...unflippedEntries, ...flippedEntries];
 }
@@ -145,7 +145,7 @@ export async function applyFilter(image, filter) {
         for (let index = 0; index < data.length; index += info.channels) {
           data[index] = closestGreyscaleLevel(data[index]);
         }
-        return sharp(data, { raw: info }).jpeg().toBuffer();
+        return sharp(data, { raw: info }).png({ palette: true, colours: 4 }).toBuffer();
       });
   }
 
@@ -177,7 +177,9 @@ async function ditherGameBoyGreyscale(image) {
     }
   }
 
-  return sharp(output, { raw: { width: info.width, height: info.height, channels: 1 } }).jpeg().toBuffer();
+  return sharp(output, { raw: { width: info.width, height: info.height, channels: 1 } })
+    .png({ palette: true, colours: 4 })
+    .toBuffer();
 }
 
 function closestGreyscaleLevel(value) {
@@ -198,8 +200,13 @@ async function mapToPalette(image, palette) {
   return sharp(data, { raw: info }).jpeg().toBuffer();
 }
 
-function flipPalette(image) {
-  return sharp(image).negate().jpeg().toBuffer();
+function flipPalette(image, lossless = false) {
+  const pipeline = sharp(image).negate();
+  return lossless ? pipeline.png({ palette: true, colours: 4 }).toBuffer() : pipeline.jpeg().toBuffer();
+}
+
+function isLosslessFilter(filter) {
+  return filter === 'gb' || filter === 'gbdither';
 }
 
 function nearestColour(red, green, blue, palette) {
