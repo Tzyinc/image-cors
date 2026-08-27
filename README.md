@@ -31,7 +31,7 @@ An [.env.example](/Users/tenzy/Documents/fun/image-cache-proxy/.env.example) lis
 | `/?w=400&h=300` | Stretched to exactly 400 × 300px |
 | `/?filter=bnw` | Black-and-white version (cached) |
 | `/?filter=gb` | Four-level greyscale version (cached) |
-| `/?filter=gbdither` | Four-level Game Boy greyscale with dithering (cached) |
+| `/?filter=gbdither` | 1-bit black-and-white Game Boy dither (cached) |
 | `/?filter=gbc` | Game Boy Color–inspired 16-colour palette version (cached) |
 | `/?palette=flip` | Inverted-colour palette version (cached) |
 | `/?filter=gbc&palette=flip` | Inverted Game Boy Color palette version (cached) |
@@ -49,9 +49,9 @@ The most recently used 100 transformed outputs (scales, rotations, and `gbdither
 
 The `gbc` filter maps every pixel to a fixed 16-colour RGB555 palette, giving a colourful Game Boy Color look. The palette is defined as `GBC_PALETTE` in `src/image-store.js`, ready to be replaced or made selectable in a future version.
 
-`gb` and `gbdither` use a high-contrast four-level greyscale palette (`24`, `104`, `188`, `255`) designed to avoid crushed blacks and indistinct highlights. `gbdither` uses Floyd–Steinberg dithering with those levels, preserving more visual detail in gradients at the cost of a deliberate pixel pattern. It is applied after rotation and scaling, so the dither pattern remains crisp at the final requested size.
+`gb` uses a high-contrast four-level greyscale palette (`24`, `104`, `188`, `255`) designed to avoid crushed blacks and indistinct highlights. `gbdither` uses Floyd–Steinberg dithering with a strict black-and-white palette, preserving more visual detail in gradients at the cost of a deliberate pixel pattern. It is applied after rotation and scaling, so the dither pattern remains crisp at the final requested size.
 
-`gb` and `gbdither` are served as lossless indexed PNGs with at most four palette entries (equivalent to 2-bit colour), including after rotation, scaling, or palette flipping. A true 1-bit file would only preserve two colours.
+`gb` is served as a lossless indexed PNG with at most four palette entries (equivalent to 2-bit colour). `gbdither` is served as a lossless, indexed 1-bit PNG with exactly two palette entries. Both remain lossless after rotation, scaling, or palette flipping.
 
 `palette=flip` inverts the colour palette after the selected filter has been applied. Original, filtered, and flipped variants are all regenerated and cached on each five-minute refresh.
 

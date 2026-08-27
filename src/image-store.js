@@ -7,6 +7,7 @@ const VALID_PALETTES = new Set(['flip']);
 // Avoid pure black for the darkest shade and pure-white-adjacent tones for the
 // middle lights. This holds up better on displays that crush shadows or highlights.
 const GB_GREYSCALE_LEVELS = [24, 104, 188, 255];
+const GB_DITHER_LEVELS = [0, 255];
 
 // A compact, Game Boy Color-inspired palette. Each channel is an RGB555 value
 // expanded to 8-bit, matching the colour depth of the original CGB hardware.
@@ -54,7 +55,7 @@ export class ImageStore {
     const key = cacheKey(filter, palette);
     if (!this.#filtered.has(key)) {
       const base = filter ? await applyFilter(this.#original, filter) : this.#original;
-      this.#filtered.set(key, palette === 'flip' ? await flipPalette(base, isLosslessFilter(filter)) : base);
+      this.#filtered.set(key, palette === 'flip' ? await flipPalette(base, paletteColourCount(filter)) : base);
     }
     return this.#filtered.get(key);
   }
@@ -122,7 +123,7 @@ async function buildFilteredCache(image) {
   const unflipped = new Map(unflippedEntries);
   const sourceVariants = [[undefined, image], ...[...EAGER_FILTERS].map((filter) => [filter, unflipped.get(cacheKey(filter))])];
   const flippedEntries = await Promise.all(
-    sourceVariants.map(async ([filter, source]) => [cacheKey(filter, 'flip'), await flipPalette(source, isLosslessFilter(filter))]),
+    sourceVariants.map(async ([filter, source]) => [cacheKey(filter, 'flip'), await flipPalette(source, paletteColourCount(filter))]),
   );
   return [...unflippedEntries, ...flippedEntries];
 }
@@ -158,13 +159,13 @@ async function ditherGameBoyGreyscale(image) {
   const pixels = new Float32Array(info.width * info.height);
   for (let pixel = 0; pixel < pixels.length; pixel += 1) pixels[pixel] = data[pixel * info.channels];
 
-  // Floyd–Steinberg error diffusion into the high-contrast Game Boy grey levels.
+  // Floyd–Steinberg error diffusion into a strict black-and-white Game Boy dither.
   const output = Buffer.alloc(pixels.length);
   for (let y = 0; y < info.height; y += 1) {
     for (let x = 0; x < info.width; x += 1) {
       const index = y * info.width + x;
       const source = Math.max(0, Math.min(255, pixels[index]));
-      const quantized = closestGreyscaleLevel(source);
+      const quantized = closestGreyscaleLevel(source, GB_DITHER_LEVELS);
       const error = source - quantized;
       output[index] = quantized;
 
@@ -178,14 +179,14 @@ async function ditherGameBoyGreyscale(image) {
   }
 
   return sharp(output, { raw: { width: info.width, height: info.height, channels: 1 } })
-    .png({ palette: true, colours: 4 })
+    .png({ palette: true, colours: 2 })
     .toBuffer();
 }
 
-function closestGreyscaleLevel(value) {
-  return GB_GREYSCALE_LEVELS.reduce(
+function closestGreyscaleLevel(value, levels = GB_GREYSCALE_LEVELS) {
+  return levels.reduce(
     (closest, level) => Math.abs(value - level) < Math.abs(value - closest) ? level : closest,
-    GB_GREYSCALE_LEVELS[0],
+    levels[0],
   );
 }
 
@@ -200,13 +201,15 @@ async function mapToPalette(image, palette) {
   return sharp(data, { raw: info }).jpeg().toBuffer();
 }
 
-function flipPalette(image, lossless = false) {
+function flipPalette(image, colours) {
   const pipeline = sharp(image).negate();
-  return lossless ? pipeline.png({ palette: true, colours: 4 }).toBuffer() : pipeline.jpeg().toBuffer();
+  return colours ? pipeline.png({ palette: true, colours }).toBuffer() : pipeline.jpeg().toBuffer();
 }
 
-function isLosslessFilter(filter) {
-  return filter === 'gb' || filter === 'gbdither';
+function paletteColourCount(filter) {
+  if (filter === 'gb') return 4;
+  if (filter === 'gbdither') return 2;
+  return undefined;
 }
 
 function nearestColour(red, green, blue, palette) {
@@ -222,4 +225,4 @@ function nearestColour(red, green, blue, palette) {
   return closest;
 }
 
-export { DEFAULT_REFRESH_INTERVAL_MS, GBC_PALETTE, GB_GREYSCALE_LEVELS, VALID_FILTERS, VALID_PALETTES };
+export { DEFAULT_REFRESH_INTERVAL_MS, GBC_PALETTE, GB_DITHER_LEVELS, GB_GREYSCALE_LEVELS, VALID_FILTERS, VALID_PALETTES };

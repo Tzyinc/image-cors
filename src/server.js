@@ -102,23 +102,26 @@ async function createOutputImage(options) {
   }
   if (deferredDither) {
     image = await applyFilter(image, 'gbdither');
-    if (options.palette === 'flip') image = await sharp(image).negate().png({ palette: true, colours: 4 }).toBuffer();
+    if (options.palette === 'flip') image = await sharp(image).negate().png({ palette: true, colours: 2 }).toBuffer();
   }
   return image;
 }
 
 function encodeOutput(pipeline, filter) {
-  return isLosslessFilter(filter)
-    ? pipeline.png({ palette: true, colours: 4 }).toBuffer()
+  const colours = paletteColourCount(filter);
+  return colours
+    ? pipeline.png({ palette: true, colours }).toBuffer()
     : pipeline.jpeg().toBuffer();
 }
 
 function outputContentType(options) {
-  return isLosslessFilter(options.filter) ? 'image/png' : 'image/jpeg';
+  return paletteColourCount(options.filter) ? 'image/png' : 'image/jpeg';
 }
 
-function isLosslessFilter(filter) {
-  return filter === 'gb' || filter === 'gbdither';
+function paletteColourCount(filter) {
+  if (filter === 'gb') return 4;
+  if (filter === 'gbdither') return 2;
+  return undefined;
 }
 
 function shouldCacheOutput(options) {
