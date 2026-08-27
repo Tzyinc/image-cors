@@ -6,7 +6,7 @@ const EAGER_FILTERS = new Set(['bnw', 'gb', 'gbc']);
 const VALID_PALETTES = new Set(['flip']);
 // Avoid pure black for the darkest shade and pure-white-adjacent tones for the
 // middle lights. This holds up better on displays that crush shadows or highlights.
-const GB_GREYSCALE_LEVELS = [24, 104, 188, 255];
+const GB_GREYSCALE_LEVELS = [40, 128, 200, 255];
 const GB_DITHER_LEVELS = [0, 255];
 
 // A compact, Game Boy Color-inspired palette. Each channel is an RGB555 value
@@ -144,7 +144,7 @@ export async function applyFilter(image, filter) {
       .toBuffer({ resolveWithObject: true })
       .then(({ data, info }) => {
         for (let index = 0; index < data.length; index += info.channels) {
-          data[index] = closestGreyscaleLevel(data[index]);
+          data[index] = quantiseGbLevel(data[index]);
         }
         return sharp(data, { raw: info }).png({ palette: true, colours: 4 }).toBuffer();
       });
@@ -155,33 +155,31 @@ export async function applyFilter(image, filter) {
 }
 
 async function ditherGameBoyGreyscale(image) {
-  // Stretch the final image's tonal range and apply restrained local contrast first.
-  // A single global threshold otherwise loses most detail in low-contrast radar imagery.
-  const { data, info } = await sharp(image)
-    .grayscale()
-    .normalise({ lower: 1, upper: 99 })
-    .clahe({ width: 16, height: 16, maxSlope: 2 })
-    .raw()
-    .toBuffer({ resolveWithObject: true });
+  const { data, info } = await sharp(image).grayscale().raw().toBuffer({ resolveWithObject: true });
   const pixels = new Float32Array(info.width * info.height);
-  for (let pixel = 0; pixel < pixels.length; pixel += 1) pixels[pixel] = data[pixel * info.channels];
+  for (let pixel = 0; pixel < pixels.length; pixel += 1) {
+    pixels[pixel] = liftShadowDetail(data[pixel * info.channels]);
+  }
 
-  // Floyd–Steinberg error diffusion into a strict black-and-white Game Boy dither.
+  // Atkinson diffusion keeps more local detail than Floyd–Steinberg at small output sizes.
+  // It intentionally discards a quarter of the error, producing a lighter, clearer image.
   const output = Buffer.alloc(pixels.length);
   for (let y = 0; y < info.height; y += 1) {
     for (let x = 0; x < info.width; x += 1) {
       const index = y * info.width + x;
       const source = Math.max(0, Math.min(255, pixels[index]));
       const quantized = closestGreyscaleLevel(source, GB_DITHER_LEVELS);
-      const error = source - quantized;
+      const error = (source - quantized) / 8;
       output[index] = quantized;
 
-      if (x + 1 < info.width) pixels[index + 1] += error * (7 / 16);
+      if (x + 1 < info.width) pixels[index + 1] += error;
+      if (x + 2 < info.width) pixels[index + 2] += error;
       if (y + 1 < info.height) {
-        if (x > 0) pixels[index + info.width - 1] += error * (3 / 16);
-        pixels[index + info.width] += error * (5 / 16);
-        if (x + 1 < info.width) pixels[index + info.width + 1] += error * (1 / 16);
+        if (x > 0) pixels[index + info.width - 1] += error;
+        pixels[index + info.width] += error;
+        if (x + 1 < info.width) pixels[index + info.width + 1] += error;
       }
+      if (y + 2 < info.height) pixels[index + (2 * info.width)] += error;
     }
   }
 
@@ -195,6 +193,18 @@ function closestGreyscaleLevel(value, levels = GB_GREYSCALE_LEVELS) {
     (closest, level) => Math.abs(value - level) < Math.abs(value - closest) ? level : closest,
     levels[0],
   );
+}
+
+function quantiseGbLevel(value) {
+  const tone = liftShadowDetail(value);
+  const index = Math.min(GB_GREYSCALE_LEVELS.length - 1, Math.floor(tone / 64));
+  return GB_GREYSCALE_LEVELS[index];
+}
+
+function liftShadowDetail(value) {
+  // A gamma below 1 expands the dark half of the image, where radar detail tends
+  // to sit, while retaining a distinct white level for the brightest regions.
+  return Math.round(255 * ((Math.max(0, Math.min(255, value)) / 255) ** 0.7));
 }
 
 async function mapToPalette(image, palette) {
