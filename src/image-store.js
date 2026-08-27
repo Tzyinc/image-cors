@@ -7,7 +7,10 @@ const VALID_PALETTES = new Set(['flip']);
 // Avoid pure black for the darkest shade and pure-white-adjacent tones for the
 // middle lights. This holds up better on displays that crush shadows or highlights.
 const GB_GREYSCALE_LEVELS = [40, 128, 200, 255];
-const GB_DITHER_LEVELS = [0, 255];
+// Each four-level GB tone maps directly to a stable black/white tile density.
+// This avoids error-diffusion patterns disappearing at small output dimensions.
+const GB_HALFTONE_WHITE_COUNTS = [0, 2, 3, 4];
+const GB_HALFTONE_RANK_2X2 = [0, 2, 3, 1];
 
 // A compact, Game Boy Color-inspired palette. Each channel is an RGB555 value
 // expanded to 8-bit, matching the colour depth of the original CGB hardware.
@@ -159,30 +162,13 @@ async function ditherGameBoyGreyscale(image) {
   // This makes the 1-bit variant inherit the successful GB tonal treatment.
   const gbImage = await applyFilter(image, 'gb');
   const { data, info } = await sharp(gbImage).grayscale().raw().toBuffer({ resolveWithObject: true });
-  const pixels = new Float32Array(info.width * info.height);
-  for (let pixel = 0; pixel < pixels.length; pixel += 1) {
-    pixels[pixel] = expandGbLevelForDither(data[pixel * info.channels]);
-  }
-
-  // Atkinson diffusion keeps more local detail than Floyd–Steinberg at small output sizes.
-  // It intentionally discards a quarter of the error, producing a lighter, clearer image.
-  const output = Buffer.alloc(pixels.length);
+  const output = Buffer.alloc(info.width * info.height);
   for (let y = 0; y < info.height; y += 1) {
     for (let x = 0; x < info.width; x += 1) {
       const index = y * info.width + x;
-      const source = Math.max(0, Math.min(255, pixels[index]));
-      const quantized = closestGreyscaleLevel(source, GB_DITHER_LEVELS);
-      const error = (source - quantized) / 8;
-      output[index] = quantized;
-
-      if (x + 1 < info.width) pixels[index + 1] += error;
-      if (x + 2 < info.width) pixels[index + 2] += error;
-      if (y + 1 < info.height) {
-        if (x > 0) pixels[index + info.width - 1] += error;
-        pixels[index + info.width] += error;
-        if (x + 1 < info.width) pixels[index + info.width + 1] += error;
-      }
-      if (y + 2 < info.height) pixels[index + (2 * info.width)] += error;
+      const toneIndex = gbToneIndex(data[index * info.channels]);
+      const rank = GB_HALFTONE_RANK_2X2[(y % 2) * 2 + (x % 2)];
+      output[index] = rank < GB_HALFTONE_WHITE_COUNTS[toneIndex] ? 255 : 0;
     }
   }
 
@@ -191,20 +177,13 @@ async function ditherGameBoyGreyscale(image) {
     .toBuffer();
 }
 
-function closestGreyscaleLevel(value, levels = GB_GREYSCALE_LEVELS) {
-  return levels.reduce(
-    (closest, level) => Math.abs(value - level) < Math.abs(value - closest) ? level : closest,
-    levels[0],
-  );
-}
-
 function quantiseGbLevel(value) {
   const tone = liftShadowDetail(value);
   const index = Math.min(GB_GREYSCALE_LEVELS.length - 1, Math.floor(tone / 64));
   return GB_GREYSCALE_LEVELS[index];
 }
 
-function expandGbLevelForDither(value) {
+function gbToneIndex(value) {
   let closestIndex = 0;
   let closestDistance = Infinity;
   for (const [index, level] of GB_GREYSCALE_LEVELS.entries()) {
@@ -214,9 +193,7 @@ function expandGbLevelForDither(value) {
       closestDistance = distance;
     }
   }
-  // Expand the four display-tuned values back to evenly spaced luminance bands
-  // before error diffusion, preserving their intended relative tone.
-  return (closestIndex * 255) / (GB_GREYSCALE_LEVELS.length - 1);
+  return closestIndex;
 }
 
 function liftShadowDetail(value) {
@@ -260,4 +237,12 @@ function nearestColour(red, green, blue, palette) {
   return closest;
 }
 
-export { DEFAULT_REFRESH_INTERVAL_MS, GBC_PALETTE, GB_DITHER_LEVELS, GB_GREYSCALE_LEVELS, VALID_FILTERS, VALID_PALETTES };
+export {
+  DEFAULT_REFRESH_INTERVAL_MS,
+  GBC_PALETTE,
+  GB_HALFTONE_RANK_2X2,
+  GB_HALFTONE_WHITE_COUNTS,
+  GB_GREYSCALE_LEVELS,
+  VALID_FILTERS,
+  VALID_PALETTES,
+};

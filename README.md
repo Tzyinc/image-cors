@@ -11,6 +11,8 @@ npm install
 npm start
 ```
 
+`npm start` runs with Node.js watch mode and automatically restarts after source-file changes.
+
 The server listens on `http://localhost:3000` by default. `IMAGE_SOURCE_URL` is required and must point to an upstream image. `PORT` and `REFRESH_INTERVAL_MS` are also configurable.
 
 ```sh
@@ -37,6 +39,7 @@ An [.env.example](/Users/tenzy/Documents/fun/image-cache-proxy/.env.example) lis
 | `/?filter=gbc&palette=flip` | Inverted Game Boy Color palette version (cached) |
 | `/?rotate=90` | Rotate clockwise by 90° |
 | `/?rotate=270&w=320` | Rotate clockwise by 270°, then scale |
+| `/?filter=gbdither&h=122&nocache=1` | Regenerate this output without using the transform cache |
 | `/?w=400&filter=gb` | Cached filter then on-demand scaling |
 
 Both `w` and `h` must be integers from 1 through 8192. With exactly one dimension supplied, the image is kept within that dimension without enlargement. All filtered source variants are regenerated along with the upstream image every five minutes and retained in memory.
@@ -45,11 +48,13 @@ Scaled output uses full Lanczos3 resampling with a light sharpening pass, priori
 
 The most recently used 100 transformed outputs (scales, rotations, and `gbdither` variants) are cached in memory using an LRU policy. This keeps common sizes fast without retaining every possible query combination. The transformed-output cache is cleared on each upstream refresh, so it cannot serve an outdated image.
 
+Use `nocache=1` to bypass the server-side transform cache for a request. Responses include an `X-Image-Transform-Cache` header with `hit`, `miss`, or `bypass`.
+
 `rotate` accepts only `0`, `90`, `180`, or `270` (clockwise degrees). It is applied before sizing and is deliberately generated per request, like scaling.
 
 The `gbc` filter maps every pixel to a fixed 16-colour RGB555 palette, giving a colourful Game Boy Color look. The palette is defined as `GBC_PALETTE` in `src/image-store.js`, ready to be replaced or made selectable in a future version.
 
-`gb` uses a shadow-lifted four-level greyscale palette (`40`, `128`, `200`, `255`) with fixed tonal bands, so midtones do not collapse into black. `gbdither` first applies those exact `gb` bands, then uses a custom Atkinson error-diffusion algorithm to render them in a strict black-and-white palette. It is applied after rotation and scaling, so the dither pattern remains crisp at the final requested size.
+`gb` uses a shadow-lifted four-level greyscale palette (`40`, `128`, `200`, `255`) with fixed tonal bands, so midtones do not collapse into black. `gbdither` first applies those exact `gb` bands, then maps them to a deterministic 2×2 halftone: solid black, 50% checkerboard, 75% white, and solid white. This custom mapping preserves visibly distinct tones at small output dimensions.
 
 `gb` is served as a lossless indexed PNG with at most four palette entries (equivalent to 2-bit colour). `gbdither` is served as a lossless, indexed 1-bit PNG with exactly two palette entries. Both remain lossless after rotation, scaling, or palette flipping.
 

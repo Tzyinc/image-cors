@@ -55,10 +55,12 @@ app.get('/', async (request, response, next) => {
   try {
     const options = parseImageOptions(request.query);
     const cacheKey = transformedCacheKey(options);
-    let image = transformedImageCache.get(cacheKey);
+    let cacheStatus = options.bypassCache ? 'bypass' : 'miss';
+    let image = options.bypassCache ? undefined : transformedImageCache.get(cacheKey);
+    if (image) cacheStatus = 'hit';
     if (!image) {
       image = await createOutputImage(options);
-      if (shouldCacheOutput(options)) transformedImageCache.set(cacheKey, image);
+      if (!options.bypassCache && shouldCacheOutput(options)) transformedImageCache.set(cacheKey, image);
     }
 
     response.set({
@@ -67,6 +69,7 @@ app.get('/', async (request, response, next) => {
       'x-image-filter': options.filter ?? 'none',
       'x-image-palette': options.palette ?? 'normal',
       'x-image-rotation': String(options.rotation),
+      'x-image-transform-cache': cacheStatus,
     });
     response.send(image);
   } catch (error) {
@@ -151,13 +154,20 @@ function parseImageOptions(query) {
   const filter = query.filter;
   const palette = query.palette;
   const rotation = parseRotation(query.rotate);
+  const bypassCache = parseBypassCache(query.nocache);
   if (filter !== undefined && (typeof filter !== 'string' || !VALID_FILTERS.has(filter))) {
     throw new InputError(`filter must be one of: ${[...VALID_FILTERS].join(', ')}`);
   }
   if (palette !== undefined && (typeof palette !== 'string' || !VALID_PALETTES.has(palette))) {
     throw new InputError(`palette must be one of: ${[...VALID_PALETTES].join(', ')}`);
   }
-  return { width, height, filter, palette, rotation };
+  return { width, height, filter, palette, rotation, bypassCache };
+}
+
+function parseBypassCache(value) {
+  if (value === undefined || value === '0') return false;
+  if (value === '1') return true;
+  throw new InputError('nocache must be 0 or 1');
 }
 
 function parseRotation(value) {
