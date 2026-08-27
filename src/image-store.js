@@ -155,10 +155,13 @@ export async function applyFilter(image, filter) {
 }
 
 async function ditherGameBoyGreyscale(image) {
-  const { data, info } = await sharp(image).grayscale().raw().toBuffer({ resolveWithObject: true });
+  // Dither the same four tonal bands used by `gb`, rather than the raw image.
+  // This makes the 1-bit variant inherit the successful GB tonal treatment.
+  const gbImage = await applyFilter(image, 'gb');
+  const { data, info } = await sharp(gbImage).grayscale().raw().toBuffer({ resolveWithObject: true });
   const pixels = new Float32Array(info.width * info.height);
   for (let pixel = 0; pixel < pixels.length; pixel += 1) {
-    pixels[pixel] = liftShadowDetail(data[pixel * info.channels]);
+    pixels[pixel] = expandGbLevelForDither(data[pixel * info.channels]);
   }
 
   // Atkinson diffusion keeps more local detail than Floyd–Steinberg at small output sizes.
@@ -199,6 +202,21 @@ function quantiseGbLevel(value) {
   const tone = liftShadowDetail(value);
   const index = Math.min(GB_GREYSCALE_LEVELS.length - 1, Math.floor(tone / 64));
   return GB_GREYSCALE_LEVELS[index];
+}
+
+function expandGbLevelForDither(value) {
+  let closestIndex = 0;
+  let closestDistance = Infinity;
+  for (const [index, level] of GB_GREYSCALE_LEVELS.entries()) {
+    const distance = Math.abs(value - level);
+    if (distance < closestDistance) {
+      closestIndex = index;
+      closestDistance = distance;
+    }
+  }
+  // Expand the four display-tuned values back to evenly spaced luminance bands
+  // before error diffusion, preserving their intended relative tone.
+  return (closestIndex * 255) / (GB_GREYSCALE_LEVELS.length - 1);
 }
 
 function liftShadowDetail(value) {
