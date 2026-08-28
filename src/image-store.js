@@ -7,6 +7,8 @@ const VALID_PALETTES = new Set(['flip']);
 // Avoid pure black for the darkest shade and pure-white-adjacent tones for the
 // middle lights. This holds up better on displays that crush shadows or highlights.
 const GB_GREYSCALE_LEVELS = [40, 128, 200, 255];
+const DITHER_WHITE_POINT = 28;
+const DITHER_BLACK_POINT = 84;
 
 // A compact, Game Boy Color-inspired palette. Each channel is an RGB555 value
 // expanded to 8-bit, matching the colour depth of the original CGB hardware.
@@ -154,12 +156,17 @@ export async function applyFilter(image, filter) {
 }
 
 async function ditherGameBoyGreyscale(image) {
-  // Apply error diffusion at the requested output size.  Unlike a two-colour
-  // halftone, this keeps all four GB greys visible in the darkest regions.
+  // Compress the chosen source-intensity window to a binary target and diffuse
+  // its error at the requested output size. The intentionally inverted mapping
+  // keeps values <= 28 white and values >= 84 black.
   const { data, info } = await sharp(image).grayscale().raw().toBuffer({ resolveWithObject: true });
   const values = new Float32Array(info.width * info.height);
   for (let index = 0; index < values.length; index += 1) {
-    values[index] = liftShadowDetail(data[index * info.channels]);
+    const sourceValue = data[index * info.channels];
+    values[index] = Math.max(
+      0,
+      Math.min(255, ((DITHER_BLACK_POINT - sourceValue) * 255) / (DITHER_BLACK_POINT - DITHER_WHITE_POINT)),
+    );
   }
 
   const output = Buffer.alloc(values.length);
@@ -167,7 +174,7 @@ async function ditherGameBoyGreyscale(image) {
     for (let x = 0; x < info.width; x += 1) {
       const index = y * info.width + x;
       const original = values[index];
-      const quantised = nearestGbLevel(original);
+      const quantised = original >= 128 ? 255 : 0;
       const error = original - quantised;
       output[index] = quantised;
 
@@ -181,7 +188,7 @@ async function ditherGameBoyGreyscale(image) {
   }
 
   return sharp(output, { raw: { width: info.width, height: info.height, channels: 1 } })
-    .png({ palette: true, colours: 4 })
+    .png({ palette: true, colours: 2 })
     .toBuffer();
 }
 
@@ -189,19 +196,6 @@ function quantiseGbLevel(value) {
   const tone = liftShadowDetail(value);
   const index = Math.min(GB_GREYSCALE_LEVELS.length - 1, Math.floor(tone / 64));
   return GB_GREYSCALE_LEVELS[index];
-}
-
-function nearestGbLevel(value) {
-  let closestLevel = GB_GREYSCALE_LEVELS[0];
-  let closestDistance = Infinity;
-  for (const level of GB_GREYSCALE_LEVELS) {
-    const distance = Math.abs(value - level);
-    if (distance < closestDistance) {
-      closestLevel = level;
-      closestDistance = distance;
-    }
-  }
-  return closestLevel;
 }
 
 function diffuseError(values, width, height, x, y, amount) {
@@ -235,7 +229,7 @@ function flipPalette(image, colours) {
 
 function paletteColourCount(filter) {
   if (filter === 'gb') return 4;
-  if (filter === 'gbdither') return 4;
+  if (filter === 'gbdither') return 2;
   return undefined;
 }
 
@@ -254,6 +248,8 @@ function nearestColour(red, green, blue, palette) {
 
 export {
   DEFAULT_REFRESH_INTERVAL_MS,
+  DITHER_BLACK_POINT,
+  DITHER_WHITE_POINT,
   GBC_PALETTE,
   GB_GREYSCALE_LEVELS,
   VALID_FILTERS,

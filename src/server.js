@@ -129,7 +129,7 @@ function outputContentType(options) {
 
 function paletteColourCount(filter) {
   if (filter === 'gb') return 4;
-  if (filter === 'gbdither') return 4;
+  if (filter === 'gbdither') return 2;
   return undefined;
 }
 
