@@ -23,7 +23,7 @@ An [.env.example](/Users/tenzy/Documents/fun/image-cache-proxy/.env.example) lis
 
 ## Endpoints
 
-`GET /` serves the cached JPEG.
+`GET /` serves the cached original image. Use query parameters to request a transform.
 
 | Request | Result |
 | --- | --- |
@@ -46,16 +46,43 @@ An [.env.example](/Users/tenzy/Documents/fun/image-cache-proxy/.env.example) lis
 | `/?rotate=270&w=320` | Rotate clockwise by 270°, then scale |
 | `/?filter=gbdither&h=122&nocache=1` | Regenerate this output without using the transform cache |
 | `/?w=400&filter=gb` | Cached filter then on-demand scaling |
+| `/?filter=epd7outline&h=122` | EPD7 palette with crisp black region outlines |
+| `/?filter=bnwline&h=122` | EPD7-derived black-on-white contour map |
+| `/?filter=gboutline&h=122` | Four GB greys with EPD7-derived black contours |
 
-Both `w` and `h` must be integers from 1 through 8192. With exactly one dimension supplied, the image is kept within that dimension without enlargement. All filtered source variants are regenerated along with the upstream image every five minutes and retained in memory.
+### Query parameters
+
+| Parameter | Accepted values | Behaviour |
+| --- | --- | --- |
+| `w`, `h` | Integer `1`–`8192` | One dimension retains aspect ratio; supplying both stretches to the exact dimensions. Images are not enlarged. |
+| `filter` | `bnw`, `gb`, `gbdither`, `gbc`, `epd4`, `epd7`, `epd7outline`, `bnwline`, `gboutline` | Selects a filter from the reference below. |
+| `palette` | `flip` | Inverts the finished image. |
+| `rotate` | `0`, `90`, `180`, `270` | Clockwise rotation, performed before sizing. |
+| `nocache` | `0`, `1` | With `1`, bypasses the transformed-output cache for that request. |
+
+### Filter reference
+
+| Filter | Output | Logic |
+| --- | --- | --- |
+| `bnw` | JPEG | Greyscale threshold at 128. |
+| `gb` | Indexed PNG | Four greys: `40`, `128`, `200`, `255`, after a shadow-lifting gamma curve. |
+| `gbdither` | Indexed PNG | Black/white Floyd–Steinberg dither. Source intensities ≤ `28` become white; ≥ `84` become black. |
+| `gbc` | JPEG | Nearest colour from the custom 16-colour Game Boy Color-inspired RGB555 palette. |
+| `epd4` | Indexed PNG | Nearest colour from black, white, red, yellow. |
+| `epd7` | Indexed PNG | Saturated pixels use EPD7 inks; neutral pixels use greys `0`, `85`, `170`, `255`. |
+| `epd7outline` | Indexed PNG | The `epd7` fill plus one-pixel black contours at mapped-colour changes. |
+| `bnwline` | Indexed PNG | EPD7-derived region contours only: black lines on white. |
+| `gboutline` | Indexed PNG | GB four-grey fill with the same black EPD7-derived contours. |
 
 Scaled output uses full Lanczos3 resampling with a light sharpening pass, prioritising crisp detail at small dimensions over the fastest possible resize.
 
-The most recently used 100 transformed outputs (scales, rotations, and dither variants) are cached in memory using an LRU policy. This keeps common sizes fast without retaining every possible query combination. The transformed-output cache is cleared on each upstream refresh, so it cannot serve an outdated image.
+## Caching and refresh
+
+The upstream image refreshes in memory at startup and every five minutes by default. A failed refresh leaves the last successful image available. Eager base variants (`bnw`, `gb`, `gbc`, `epd4`, and `epd7`) are rebuilt on every successful refresh.
+
+The most recently used 100 transformed outputs—scales, rotations, and on-demand dither/outline variants—are cached in memory using an LRU policy. This keeps common sizes fast without retaining every possible query combination. The transformed-output cache is cleared on each upstream refresh, so it cannot serve an outdated image.
 
 Use `nocache=1` to bypass the server-side transform cache for a request. Responses include an `X-Image-Transform-Cache` header with `hit`, `miss`, or `bypass`.
-
-`rotate` accepts only `0`, `90`, `180`, or `270` (clockwise degrees). It is applied before sizing and is deliberately generated per request, like scaling.
 
 The `gbc` filter maps every pixel to a fixed 16-colour RGB555 palette, giving a colourful Game Boy Color look. The palette is defined as `GBC_PALETTE` in `src/image-store.js`, ready to be replaced or made selectable in a future version.
 
