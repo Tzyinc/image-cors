@@ -82,9 +82,12 @@ app.get('/', async (request, response, next) => {
 async function createOutputImage(options) {
   // Dithering is intentionally deferred until after rotation and reduction. Resizing a
   // pre-dithered source averages away its pixel pattern, especially at small dimensions.
-  const deferredDither = options.filter === 'gbdither';
-  const source = await store.getImage(deferredDither ? undefined : options.filter, deferredDither ? undefined : options.palette);
   const needsTransform = options.width || options.height || options.rotation !== 0;
+  // Palette mapping is likewise deferred when transforming so Lanczos does not
+  // blend fixed e-paper inks into colours that the target palette cannot show.
+  const deferredFilter = options.filter === 'gbdither' || options.filter === 'epd7outline' || options.filter === 'bnwline' || options.filter === 'gboutline'
+    || (needsTransform && (options.filter === 'epd4' || options.filter === 'epd7'));
+  const source = await store.getImage(deferredFilter ? undefined : options.filter, deferredFilter ? undefined : options.palette);
   let image = source;
   if (needsTransform) {
     const pipeline = sharp(source);
@@ -103,14 +106,14 @@ async function createOutputImage(options) {
       // A restrained final pass restores edge definition lost during reduction.
       pipeline.sharpen({ sigma: 0.5, m1: 0, m2: 1.5 });
     }
-    // `gbdither` must receive the full-colour resized image. Encoding it before
-    // dithering would discard tonal detail before error diffusion can use it.
-    image = deferredDither
+    // Deferred filters must receive the full-colour resized image. Encoding it before
+    // filtering would discard tonal detail or blend a fixed palette prematurely.
+    image = deferredFilter
       ? await pipeline.png().toBuffer()
       : await encodeOutput(pipeline, options.filter);
   }
-  if (deferredDither) {
-    image = await applyFilter(image, 'gbdither');
+  if (deferredFilter) {
+    image = await applyFilter(image, options.filter);
     if (options.palette === 'flip') image = await sharp(image).negate().png().toBuffer();
   }
   return image;
@@ -130,11 +133,16 @@ function outputContentType(options) {
 function paletteColourCount(filter) {
   if (filter === 'gb') return 4;
   if (filter === 'gbdither') return 2;
+  if (filter === 'epd4') return 4;
+  if (filter === 'epd7') return 9;
+  if (filter === 'epd7outline') return 9;
+  if (filter === 'bnwline') return 2;
+  if (filter === 'gboutline') return 5;
   return undefined;
 }
 
 function shouldCacheOutput(options) {
-  return options.filter === 'gbdither' || options.width || options.height || options.rotation !== 0;
+  return options.filter === 'gbdither' || options.filter === 'epd7outline' || options.filter === 'bnwline' || options.filter === 'gboutline' || options.width || options.height || options.rotation !== 0;
 }
 
 function transformedCacheKey({ filter, palette, width, height, rotation }) {

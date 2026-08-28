@@ -1,8 +1,8 @@
 import sharp from 'sharp';
 
 const DEFAULT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
-const VALID_FILTERS = new Set(['bnw', 'gb', 'gbc', 'gbdither']);
-const EAGER_FILTERS = new Set(['bnw', 'gb', 'gbc']);
+const VALID_FILTERS = new Set(['bnw', 'gb', 'gbc', 'gbdither', 'epd4', 'epd7', 'epd7outline', 'bnwline', 'gboutline']);
+const EAGER_FILTERS = new Set(['bnw', 'gb', 'gbc', 'epd4', 'epd7']);
 const VALID_PALETTES = new Set(['flip']);
 // Avoid pure black for the darkest shade and pure-white-adjacent tones for the
 // middle lights. This holds up better on displays that crush shadows or highlights.
@@ -18,6 +18,17 @@ const GBC_PALETTE = [
   [176, 184, 80], [224, 168, 72], [216, 112, 64], [184, 64, 64],
   [112, 48, 96], [88, 56, 136], [152, 152, 176], [248, 248, 232],
 ];
+
+// Common reflective e-paper panel palettes.
+const EPD4_PALETTE = [
+  [0, 0, 0], [255, 255, 255], [220, 40, 35], [245, 205, 35],
+];
+const EPD7_PALETTE = [
+  [0, 0, 0], [255, 255, 255], [210, 45, 40], [245, 205, 35],
+  [235, 125, 35], [45, 140, 80], [45, 95, 180],
+];
+const EPD7_GREYSCALE_LEVELS = [0, 85, 170, 255];
+const EPD7_CHROMATIC_PALETTE = EPD7_PALETTE.slice(2);
 
 export class ImageStore {
   #sourceUrl;
@@ -153,6 +164,11 @@ export async function applyFilter(image, filter) {
 
   if (filter === 'gbc') return mapToPalette(image, GBC_PALETTE);
   if (filter === 'gbdither') return ditherGameBoyGreyscale(image);
+  if (filter === 'epd4') return mapToPalette(image, EPD4_PALETTE, true);
+  if (filter === 'epd7') return mapToEpd7(image);
+  if (filter === 'epd7outline') return outlineEpd7(image, true);
+  if (filter === 'bnwline') return outlineEpd7(image, false);
+  if (filter === 'gboutline') return outlineGb(image);
 }
 
 async function ditherGameBoyGreyscale(image) {
@@ -210,7 +226,7 @@ function liftShadowDetail(value) {
   return Math.round(255 * ((Math.max(0, Math.min(255, value)) / 255) ** 0.7));
 }
 
-async function mapToPalette(image, palette) {
+async function mapToPalette(image, palette, lossless = false) {
   const { data, info } = await sharp(image).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   for (let index = 0; index < data.length; index += info.channels) {
     const colour = nearestColour(data[index], data[index + 1], data[index + 2], palette);
@@ -218,7 +234,98 @@ async function mapToPalette(image, palette) {
     data[index + 1] = colour[1];
     data[index + 2] = colour[2];
   }
-  return sharp(data, { raw: info }).jpeg().toBuffer();
+  const output = sharp(data, { raw: info });
+  return lossless ? output.png({ palette: true, colours: palette.length }).toBuffer() : output.jpeg().toBuffer();
+}
+
+async function mapToEpd7(image) {
+  const { data, info } = await sharp(image).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  quantiseEpd7Pixels(data, info);
+  return sharp(data, { raw: info }).png({ palette: true, colours: 9 }).toBuffer();
+}
+
+async function outlineEpd7(image, retainFills) {
+  const { data, info } = await sharp(image).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  quantiseEpd7Pixels(data, info);
+  const output = retainFills ? Buffer.from(data) : Buffer.alloc(info.width * info.height, 255);
+  for (let y = 0; y < info.height; y += 1) {
+    for (let x = 0; x < info.width; x += 1) {
+      if (isEpd7Boundary(data, info, x, y)) {
+        if (retainFills) {
+          const index = (y * info.width + x) * info.channels;
+          output[index] = 0;
+          output[index + 1] = 0;
+          output[index + 2] = 0;
+        } else {
+          output[y * info.width + x] = 0;
+        }
+      }
+    }
+  }
+  return retainFills
+    ? sharp(output, { raw: info }).png({ palette: true, colours: 9 }).toBuffer()
+    : sharp(output, { raw: { width: info.width, height: info.height, channels: 1 } }).png({ palette: true, colours: 2 }).toBuffer();
+}
+
+async function outlineGb(image) {
+  const { data, info } = await sharp(image).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const epd7Regions = Buffer.from(data);
+  quantiseEpd7Pixels(epd7Regions, info);
+  const output = Buffer.alloc(info.width * info.height);
+  for (let y = 0; y < info.height; y += 1) {
+    for (let x = 0; x < info.width; x += 1) {
+      const pixel = y * info.width + x;
+      const source = pixel * info.channels;
+      const luma = 0.2126 * data[source] + 0.7152 * data[source + 1] + 0.0722 * data[source + 2];
+      output[pixel] = isEpd7Boundary(epd7Regions, info, x, y) ? 0 : quantiseGbLevel(luma);
+    }
+  }
+  // Four GB greys plus a true-black outline.
+  return sharp(output, { raw: { width: info.width, height: info.height, channels: 1 } })
+    .png({ palette: true, colours: 5 })
+    .toBuffer();
+}
+
+function quantiseEpd7Pixels(data, info) {
+  for (let index = 0; index < data.length; index += info.channels) {
+    const red = data[index];
+    const green = data[index + 1];
+    const blue = data[index + 2];
+    const colour = isSaturated(red, green, blue)
+      ? nearestColour(red, green, blue, EPD7_CHROMATIC_PALETTE)
+      : nearestGrey(red, green, blue);
+    data[index] = colour[0];
+    data[index + 1] = colour[1];
+    data[index + 2] = colour[2];
+  }
+}
+
+function isEpd7Boundary(data, info, x, y) {
+  const current = (y * info.width + x) * info.channels;
+  return (x > 0 && differentPixel(data, current, current - info.channels))
+    || (x + 1 < info.width && differentPixel(data, current, current + info.channels))
+    || (y > 0 && differentPixel(data, current, current - info.width * info.channels))
+    || (y + 1 < info.height && differentPixel(data, current, current + info.width * info.channels));
+}
+
+function differentPixel(data, first, second) {
+  return data[first] !== data[second]
+    || data[first + 1] !== data[second + 1]
+    || data[first + 2] !== data[second + 2];
+}
+
+function isSaturated(red, green, blue) {
+  const brightest = Math.max(red, green, blue);
+  const darkest = Math.min(red, green, blue);
+  return brightest > 0 && (brightest - darkest) / brightest >= 0.22;
+}
+
+function nearestGrey(red, green, blue) {
+  const luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  const level = EPD7_GREYSCALE_LEVELS.reduce((closest, candidate) => (
+    Math.abs(luma - candidate) < Math.abs(luma - closest) ? candidate : closest
+  ));
+  return [level, level, level];
 }
 
 function flipPalette(image, colours) {
@@ -230,26 +337,39 @@ function flipPalette(image, colours) {
 function paletteColourCount(filter) {
   if (filter === 'gb') return 4;
   if (filter === 'gbdither') return 2;
+  if (filter === 'epd4') return 4;
+  if (filter === 'epd7') return 9;
+  if (filter === 'epd7outline') return 9;
+  if (filter === 'bnwline') return 2;
+  if (filter === 'gboutline') return 5;
   return undefined;
 }
 
 function nearestColour(red, green, blue, palette) {
-  let closest = palette[0];
+  return palette[nearestColourIndex(red, green, blue, palette)];
+}
+
+function nearestColourIndex(red, green, blue, palette) {
+  let closestIndex = 0;
   let shortestDistance = Infinity;
-  for (const colour of palette) {
+  for (const [index, colour] of palette.entries()) {
     const distance = (red - colour[0]) ** 2 + (green - colour[1]) ** 2 + (blue - colour[2]) ** 2;
     if (distance < shortestDistance) {
-      closest = colour;
+      closestIndex = index;
       shortestDistance = distance;
     }
   }
-  return closest;
+  return closestIndex;
 }
 
 export {
   DEFAULT_REFRESH_INTERVAL_MS,
   DITHER_BLACK_POINT,
   DITHER_WHITE_POINT,
+  EPD4_PALETTE,
+  EPD7_CHROMATIC_PALETTE,
+  EPD7_GREYSCALE_LEVELS,
+  EPD7_PALETTE,
   GBC_PALETTE,
   GB_GREYSCALE_LEVELS,
   VALID_FILTERS,
