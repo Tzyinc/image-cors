@@ -46,14 +46,18 @@ export class ImageStore {
     fetchFn = globalThis.fetch,
     onRefresh,
   } = {}) {
-    if (!sourceUrl) throw new Error('IMAGE_SOURCE_URL must be configured');
     this.#sourceUrl = sourceUrl;
     this.#refreshIntervalMs = refreshIntervalMs;
     this.#fetch = fetchFn;
     this.#onRefresh = onRefresh;
   }
 
+  get configured() {
+    return Boolean(this.#sourceUrl);
+  }
+
   async getImage(filter, palette) {
+    if (!this.#sourceUrl) throw new Error('IMAGE_SOURCE_URL must be configured when SOURCE_TYPE=image');
     if (filter && !VALID_FILTERS.has(filter)) {
       throw new Error(`Unsupported filter: ${filter}`);
     }
@@ -74,6 +78,7 @@ export class ImageStore {
 
   get status() {
     return {
+      configured: this.configured,
       ready: Boolean(this.#original),
       lastUpdatedAt: this.#lastUpdatedAt?.toISOString() ?? null,
       cachedFilters: [...this.#filtered.keys()],
@@ -81,6 +86,7 @@ export class ImageStore {
   }
 
   async refresh() {
+    if (!this.#sourceUrl) return;
     if (this.#refreshPromise) return this.#refreshPromise;
 
     this.#refreshPromise = (async () => {
@@ -128,7 +134,7 @@ export class ImageStore {
   }
 }
 
-async function buildFilteredCache(image) {
+export async function buildFilteredCache(image) {
   const unflippedEntries = await Promise.all(
     [...EAGER_FILTERS].map(async (filter) => [cacheKey(filter), await applyFilter(image, filter)]),
   );
@@ -332,6 +338,10 @@ function flipPalette(image, colours) {
   const pipeline = sharp(image).negate();
   if (colours === 2) return pipeline.png().toBuffer();
   return colours ? pipeline.png({ palette: true, colours }).toBuffer() : pipeline.jpeg().toBuffer();
+}
+
+export function applyPaletteFlip(image, filter) {
+  return flipPalette(image, paletteColourCount(filter));
 }
 
 function paletteColourCount(filter) {

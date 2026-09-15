@@ -1,6 +1,13 @@
 import express from 'express';
 import sharp from 'sharp';
 import { applyFilter, DEFAULT_REFRESH_INTERVAL_MS, ImageStore, VALID_FILTERS, VALID_PALETTES } from './image-store.js';
+import {
+  DEFAULT_SCREENSHOT_TIMEOUT_MS,
+  DEFAULT_SCREENSHOT_VIEWPORT_HEIGHT,
+  DEFAULT_SCREENSHOT_VIEWPORT_WIDTH,
+  DEFAULT_SCREENSHOT_WAIT_MS,
+  ScreenshotStore,
+} from './screenshot-store.js';
 
 class LruCache {
   #capacity;
@@ -36,19 +43,32 @@ class LruCache {
 
 const PORT = parsePort(process.env.PORT) ?? 3000;
 const TRANSFORM_CACHE_CAPACITY = 100;
-const BUILD_ID = 'dither-grayscale-v2';
+const BUILD_ID = 'screenshot-source-v1';
 const refreshIntervalMs = parsePositiveInteger(process.env.REFRESH_INTERVAL_MS) ?? DEFAULT_REFRESH_INTERVAL_MS;
 const transformedImageCache = new LruCache(TRANSFORM_CACHE_CAPACITY);
-const store = new ImageStore({
+const imageStore = new ImageStore({
   sourceUrl: process.env.IMAGE_SOURCE_URL,
   refreshIntervalMs,
   onRefresh: () => transformedImageCache.clear(),
 });
+const screenshotStore = new ScreenshotStore({
+  sourceUrl: process.env.SCREENSHOT_URL,
+  refreshIntervalMs,
+  viewportWidth: parsePositiveInteger(process.env.SCREENSHOT_VIEWPORT_WIDTH) ?? DEFAULT_SCREENSHOT_VIEWPORT_WIDTH,
+  viewportHeight: parsePositiveInteger(process.env.SCREENSHOT_VIEWPORT_HEIGHT) ?? DEFAULT_SCREENSHOT_VIEWPORT_HEIGHT,
+  fullPage: process.env.SCREENSHOT_FULL_PAGE === '1',
+  waitMs: parseNonNegativeInteger(process.env.SCREENSHOT_WAIT_MS) ?? DEFAULT_SCREENSHOT_WAIT_MS,
+  timeoutMs: parsePositiveInteger(process.env.SCREENSHOT_TIMEOUT_MS) ?? DEFAULT_SCREENSHOT_TIMEOUT_MS,
+  onRefresh: () => transformedImageCache.clear(),
+});
+const sourceType = resolveSourceType(process.env.SOURCE_TYPE, imageStore.configured, screenshotStore.configured);
+const sourceStore = sourceType === 'screenshot' ? screenshotStore : imageStore;
 const app = express();
 
 app.get('/health', (_request, response) => response.json({
   build: BUILD_ID,
-  ...store.status,
+  sourceType,
+  source: sourceStore.status,
   transformedCacheEntries: transformedImageCache.size,
   transformedCacheCapacity: TRANSFORM_CACHE_CAPACITY,
 }));
@@ -61,7 +81,7 @@ app.get('/', async (request, response, next) => {
     let image = options.bypassCache ? undefined : transformedImageCache.get(cacheKey);
     if (image) cacheStatus = 'hit';
     if (!image) {
-      image = await createOutputImage(options);
+      image = await createOutputImage(options, sourceStore);
       if (!options.bypassCache && shouldCacheOutput(options)) transformedImageCache.set(cacheKey, image);
     }
 
@@ -69,6 +89,7 @@ app.get('/', async (request, response, next) => {
       'content-type': outputContentType(options),
       'cache-control': 'public, max-age=60',
       'x-image-filter': options.filter ?? 'none',
+      'x-image-source': sourceType,
       'x-image-palette': options.palette ?? 'normal',
       'x-image-rotation': String(options.rotation),
       'x-image-transform-cache': cacheStatus,
@@ -79,10 +100,10 @@ app.get('/', async (request, response, next) => {
   }
 });
 
-async function createOutputImage(options) {
+async function createOutputImage(options, store) {
   // Dithering is intentionally deferred until after rotation and reduction. Resizing a
   // pre-dithered source averages away its pixel pattern, especially at small dimensions.
-  const needsTransform = options.width || options.height || options.rotation !== 0;
+  const needsTransform = options.width || options.height || options.rotation !== 0 || options.crop;
   // Palette mapping is likewise deferred when transforming so Lanczos does not
   // blend fixed e-paper inks into colours that the target palette cannot show.
   const deferredFilter = options.filter === 'gbdither' || options.filter === 'epd7outline' || options.filter === 'bnwline' || options.filter === 'gboutline'
@@ -91,6 +112,7 @@ async function createOutputImage(options) {
   let image = source;
   if (needsTransform) {
     const pipeline = sharp(source);
+    if (options.crop) pipeline.extract(await resolveCrop(source, options.crop));
     if (options.rotation !== 0) pipeline.rotate(options.rotation);
     if (options.width || options.height) {
       pipeline.resize({
@@ -142,11 +164,19 @@ function paletteColourCount(filter) {
 }
 
 function shouldCacheOutput(options) {
-  return options.filter === 'gbdither' || options.filter === 'epd7outline' || options.filter === 'bnwline' || options.filter === 'gboutline' || options.width || options.height || options.rotation !== 0;
+  return options.filter === 'gbdither' || options.filter === 'epd7outline' || options.filter === 'bnwline' || options.filter === 'gboutline' || options.crop || options.width || options.height || options.rotation !== 0;
 }
 
-function transformedCacheKey({ filter, palette, width, height, rotation }) {
-  return JSON.stringify({ filter: filter ?? 'none', palette: palette ?? 'normal', width: width ?? null, height: height ?? null, rotation });
+function transformedCacheKey({ filter, palette, width, height, rotation, crop }) {
+  return JSON.stringify({
+    source: sourceType,
+    filter: filter ?? 'none',
+    palette: palette ?? 'normal',
+    width: width ?? null,
+    height: height ?? null,
+    rotation,
+    crop: crop ?? null,
+  });
 }
 
 app.use((error, _request, response, _next) => {
@@ -156,15 +186,22 @@ app.use((error, _request, response, _next) => {
 
 if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => console.log(`Image cache proxy listening on http://localhost:${PORT}`));
-  const refresh = () => store.refresh().catch((error) => console.error('Image refresh failed:', error.message));
+  const refreshImage = () => imageStore.refresh().catch((error) => console.error('Image refresh failed:', error.message));
+  const refreshScreenshot = () => screenshotStore.refresh().catch((error) => console.error('Screenshot refresh failed:', error.message));
   // Fetch promptly and then keep the memory cache fresh even when there are no requests.
-  refresh();
-  setInterval(refresh, refreshIntervalMs);
+  if (sourceType === 'image') {
+    refreshImage();
+    setInterval(refreshImage, refreshIntervalMs);
+  } else {
+    refreshScreenshot();
+    setInterval(refreshScreenshot, refreshIntervalMs);
+  }
 }
 
 function parseImageOptions(query) {
   const width = parseDimension(query.w, 'w');
   const height = parseDimension(query.h, 'h');
+  const crop = parseCrop(query);
   const filter = query.filter;
   const palette = query.palette;
   const rotation = parseRotation(query.rotate);
@@ -175,7 +212,32 @@ function parseImageOptions(query) {
   if (palette !== undefined && (typeof palette !== 'string' || !VALID_PALETTES.has(palette))) {
     throw new InputError(`palette must be one of: ${[...VALID_PALETTES].join(', ')}`);
   }
-  return { width, height, filter, palette, rotation, bypassCache };
+  return { width, height, crop, filter, palette, rotation, bypassCache };
+}
+
+function parseCrop(query) {
+  const x = parseNonNegativeInteger(query.cropX, 'cropX');
+  const y = parseNonNegativeInteger(query.cropY, 'cropY');
+  const width = parseDimension(query.cropW, 'cropW');
+  const height = parseDimension(query.cropH, 'cropH');
+  const requested = x !== undefined || y !== undefined || width !== undefined || height !== undefined;
+  if (!requested) return undefined;
+  if ((width === undefined) !== (height === undefined)) {
+    throw new InputError('cropW and cropH must be supplied together');
+  }
+  return { x: x ?? 0, y: y ?? 0, width: width ?? null, height: height ?? null };
+}
+
+async function resolveCrop(image, crop) {
+  const metadata = await sharp(image).metadata();
+  const sourceWidth = metadata.width;
+  const sourceHeight = metadata.height;
+  const width = crop.width ?? sourceWidth - crop.x;
+  const height = crop.height ?? sourceHeight - crop.y;
+  if (crop.x >= sourceWidth || crop.y >= sourceHeight || width < 1 || height < 1 || crop.x + width > sourceWidth || crop.y + height > sourceHeight) {
+    throw new InputError(`crop must fit within the ${sourceWidth}x${sourceHeight} source image`);
+  }
+  return { left: crop.x, top: crop.y, width, height };
 }
 
 function parseBypassCache(value) {
@@ -205,11 +267,35 @@ function parsePositiveInteger(value) {
   return Number(value);
 }
 
+function parseNonNegativeInteger(value, name = 'value') {
+  if (value === undefined || value === '') return undefined;
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) throw new InputError(`${name} must be a non-negative integer`);
+  const number = Number(value);
+  if (number > 8192) throw new InputError(`${name} must be between 0 and 8192`);
+  return number;
+}
+
 function parsePort(value) {
   const port = parsePositiveInteger(value);
   return port && port <= 65535 ? port : undefined;
 }
 
+function resolveSourceType(value, hasImageSource, hasScreenshotSource) {
+  if (value === 'image') {
+    if (!hasImageSource) throw new Error('IMAGE_SOURCE_URL must be configured when SOURCE_TYPE=image');
+    return 'image';
+  }
+  if (value === 'screenshot') {
+    if (!hasScreenshotSource) throw new Error('SCREENSHOT_URL must be configured when SOURCE_TYPE=screenshot');
+    return 'screenshot';
+  }
+  if (value !== undefined) throw new Error('SOURCE_TYPE must be image or screenshot');
+  if (hasImageSource && !hasScreenshotSource) return 'image';
+  if (hasScreenshotSource && !hasImageSource) return 'screenshot';
+  if (!hasImageSource) throw new Error('Configure IMAGE_SOURCE_URL or SCREENSHOT_URL');
+  throw new Error('Set SOURCE_TYPE to image or screenshot when both source URLs are configured');
+}
+
 class InputError extends Error {}
 
-export { app, LruCache, parseImageOptions };
+export { app, LruCache, parseImageOptions, resolveSourceType };

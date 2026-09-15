@@ -13,13 +13,33 @@ npm start
 
 `npm start` runs with Node.js watch mode and automatically restarts after source-file changes.
 
-The server listens on `http://localhost:3000` by default. `IMAGE_SOURCE_URL` is required and must point to an upstream image. `PORT` and `REFRESH_INTERVAL_MS` are also configurable.
+The server listens on `http://localhost:3000` by default. Configure exactly one active source with `SOURCE_TYPE=image` or `SOURCE_TYPE=screenshot`; `PORT` and `REFRESH_INTERVAL_MS` are also configurable.
 
 ```sh
 IMAGE_SOURCE_URL=https://example.com/radar.jpg npm start
 ```
 
 An [.env.example](/Users/tenzy/Documents/fun/image-cache-proxy/.env.example) lists the settings. The service reads environment variables supplied by its process manager or shell; it intentionally does not load `.env` files itself.
+
+### Website screenshots
+
+Set `SOURCE_TYPE=screenshot` and `SCREENSHOT_URL` to make Playwright render the website into a PNG. The screenshot is captured at startup and then refreshed on the same interval as an image source. A failed capture retains the last successful screenshot. The image source and screenshot source are mutually exclusive at runtime: only the selected source is fetched and cached.
+
+```sh
+SOURCE_TYPE=screenshot \
+SCREENSHOT_URL=https://example.com/dashboard \
+npm start
+```
+
+If exactly one source URL is configured, `SOURCE_TYPE` may be omitted and is inferred. If both URLs are configured, `SOURCE_TYPE` is required.
+
+The first setup also needs Playwright's browser runtime:
+
+```sh
+npx playwright install chromium
+```
+
+Optional screenshot settings are `SCREENSHOT_VIEWPORT_WIDTH` (default `1280`), `SCREENSHOT_VIEWPORT_HEIGHT` (default `720`), `SCREENSHOT_FULL_PAGE` (`1` to capture the full scrollable page), `SCREENSHOT_WAIT_MS` (default `1000`), and `SCREENSHOT_TIMEOUT_MS` (default `30000`). `SCREENSHOT_URL` only accepts `http` and `https` URLs.
 
 ## Endpoints
 
@@ -28,6 +48,8 @@ An [.env.example](/Users/tenzy/Documents/fun/image-cache-proxy/.env.example) lis
 | Request | Result |
 | --- | --- |
 | `/` | Original cached image |
+| `/?` with `SOURCE_TYPE=screenshot` | Cached website screenshot from `SCREENSHOT_URL` |
+| `/?cropX=40&cropY=80&cropW=640&cropH=360` | Crop a 640 × 360 region from the cached selected source |
 | `/?w=400` | 400px wide, aspect ratio retained |
 | `/?h=300` | 300px tall, aspect ratio retained |
 | `/?w=400&h=300` | Stretched to exactly 400 × 300px |
@@ -55,6 +77,8 @@ An [.env.example](/Users/tenzy/Documents/fun/image-cache-proxy/.env.example) lis
 | Parameter | Accepted values | Behaviour |
 | --- | --- | --- |
 | `w`, `h` | Integer `1`–`8192` | One dimension retains aspect ratio; supplying both stretches to the exact dimensions. Images are not enlarged. |
+| `cropX`, `cropY` | Integer `0`–`8192` | Optional top-left crop offset in source pixels. Defaults to `0`. |
+| `cropW`, `cropH` | Integer `1`–`8192` | Optional crop dimensions; must be supplied together and must fit within the selected cached source. |
 | `filter` | `bnw`, `gb`, `gbdither`, `gbc`, `epd4`, `epd7`, `epd7outline`, `bnwline`, `gboutline` | Selects a filter from the reference below. |
 | `palette` | `flip` | Inverts the finished image. |
 | `rotate` | `0`, `90`, `180`, `270` | Clockwise rotation, performed before sizing. |
@@ -78,7 +102,7 @@ Scaled output uses full Lanczos3 resampling with a light sharpening pass, priori
 
 ## Caching and refresh
 
-The upstream image refreshes in memory at startup and every five minutes by default. A failed refresh leaves the last successful image available. Eager base variants (`bnw`, `gb`, `gbc`, `epd4`, and `epd7`) are rebuilt on every successful refresh.
+The selected source refreshes in memory at startup and every five minutes by default. A failed refresh leaves the last successful source available. Eager base variants (`bnw`, `gb`, `gbc`, `epd4`, and `epd7`) are rebuilt on every successful refresh.
 
 The most recently used 100 transformed outputs—scales, rotations, and on-demand dither/outline variants—are cached in memory using an LRU policy. This keeps common sizes fast without retaining every possible query combination. The transformed-output cache is cleared on each upstream refresh, so it cannot serve an outdated image.
 
@@ -98,4 +122,4 @@ The `gbc` filter maps every pixel to a fixed 16-colour RGB555 palette, giving a 
 
 `palette=flip` inverts the colour palette after the selected filter has been applied. Original, filtered, and flipped variants are all regenerated and cached on each five-minute refresh.
 
-`GET /health` returns cache readiness, last refresh time, and generated filtered-cache keys.
+`GET /health` returns the active source type, cache readiness, last refresh time, and generated filtered-cache keys.
